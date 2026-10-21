@@ -1,4 +1,5 @@
 use std::num::NonZeroUsize;
+use std::sync::LazyLock;
 
 use codex::styling::MathVariant;
 use ecow::EcoString;
@@ -202,22 +203,27 @@ impl Synthesize for Packed<EquationElem> {
 
 impl ShowSet for Packed<EquationElem> {
     fn show_set(&self, styles: StyleChain) -> Styles {
-        let mut out = Styles::new();
-        if self.block.get(styles) {
-            out.set(AlignElem::alignment, Alignment::CENTER);
-            out.set(BlockElem::breakable, false);
-            out.set(ParLine::numbering, None);
-            out.set(EquationElem::size, MathSize::Display);
-        } else {
-            out.set(EquationElem::size, MathSize::Text);
-        }
-        out.set(TextElem::weight, FontWeight::from_number(450));
-        out.set(
-            TextElem::font,
-            FontList(vec![FontFamily::new("New Computer Modern Math")]),
-        );
-        out
+        // Building the styles once also preserves their cached hashes.
+        static STYLES: LazyLock<[Styles; 2]> =
+            LazyLock::new(|| [false, true].map(equation_show_set));
+        STYLES[self.block.get(styles) as usize].clone()
     }
+}
+
+/// The built-in show-set styles for an inline or block equation.
+fn equation_show_set(block: bool) -> Styles {
+    let mut out = Styles::new();
+    if block {
+        out.set(AlignElem::alignment, Alignment::CENTER);
+        out.set(BlockElem::breakable, false);
+        out.set(ParLine::numbering, None);
+        out.set(EquationElem::size, MathSize::Display);
+    } else {
+        out.set(EquationElem::size, MathSize::Text);
+    }
+    out.set(TextElem::weight, FontWeight::from_number(450));
+    out.set(TextElem::font, FontList(vec![FontFamily::new("New Computer Modern Math")]));
+    out
 }
 
 impl Count for Packed<EquationElem> {

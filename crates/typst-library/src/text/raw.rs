@@ -656,18 +656,26 @@ impl Packed<RawElem> {
 
 impl ShowSet for Packed<RawElem> {
     fn show_set(&self, styles: StyleChain) -> Styles {
-        let mut out = Styles::new();
-        out.set(TextElem::overhang, false);
-        out.set(TextElem::lang, Lang::ENGLISH);
-        out.set(TextElem::hyphenate, Smart::Custom(false));
-        out.set(TextElem::size, TextSize(Em::new(0.8).into()));
-        out.set(TextElem::font, FontList(vec![FontFamily::new("DejaVu Sans Mono")]));
-        out.set(TextElem::cjk_latin_spacing, Smart::Custom(None));
-        if self.block.get(styles) {
-            out.set(ParElem::justify, false);
-        }
-        out
+        // Building the styles once also preserves their cached hashes.
+        static STYLES: LazyLock<[Styles; 2]> =
+            LazyLock::new(|| [false, true].map(raw_show_set));
+        STYLES[self.block.get(styles) as usize].clone()
     }
+}
+
+/// The built-in show-set styles for inline or block raw text.
+fn raw_show_set(block: bool) -> Styles {
+    let mut out = Styles::new();
+    out.set(TextElem::overhang, false);
+    out.set(TextElem::lang, Lang::ENGLISH);
+    out.set(TextElem::hyphenate, Smart::Custom(false));
+    out.set(TextElem::size, TextSize(Em::new(0.8).into()));
+    out.set(TextElem::font, FontList(vec![FontFamily::new("DejaVu Sans Mono")]));
+    out.set(TextElem::cjk_latin_spacing, Smart::Custom(None));
+    if block {
+        out.set(ParElem::justify, false);
+    }
+    out
 }
 
 impl LocalName for Packed<RawElem> {
