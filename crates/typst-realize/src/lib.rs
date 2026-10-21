@@ -446,10 +446,19 @@ fn verdict<'a>(
     // Do pre-synthesis on a cloned element to be able to match on synthesized
     // fields before real synthesis runs (during preparation). It's really
     // unfortunate that we have to do this, but otherwise
-    // `show figure.where(kind: table)` won't work :(
+    // `show figure.where(kind: table)` won't work :( We only do it if some
+    // recipe could actually match on fields of this element, as synthesis
+    // can be expensive.
     let mut elem = elem;
     let mut slot;
-    if !prepared && elem.can::<dyn Synthesize>() {
+    if !prepared
+        && elem.can::<dyn Synthesize>()
+        && styles.recipes().any(|recipe| {
+            recipe
+                .selector()
+                .is_some_and(|selector| matches_on_fields(selector, elem.elem()))
+        })
+    {
         slot = elem.clone();
         slot.with_mut::<dyn Synthesize>()
             .unwrap()
@@ -527,6 +536,25 @@ fn verdict<'a>(
     }
 
     Some(Verdict { prepared, map, step })
+}
+
+/// Whether the selector could match on fields of elements of the given type.
+fn matches_on_fields(selector: &Selector, elem: Element) -> bool {
+    match selector {
+        Selector::Elem(e, dict) => *e == elem && dict.is_some(),
+        Selector::Or(list) | Selector::And(list) => {
+            list.iter().any(|sel| matches_on_fields(sel, elem))
+        }
+        Selector::Before { selector, end: other, .. }
+        | Selector::After { selector, start: other, .. }
+        | Selector::Within { selector, ancestor: other } => {
+            matches_on_fields(selector, elem) || matches_on_fields(other, elem)
+        }
+        Selector::Location(_)
+        | Selector::Label(_)
+        | Selector::Regex(_)
+        | Selector::Can(_) => false,
+    }
 }
 
 /// This is only executed the first time an element is visited.
