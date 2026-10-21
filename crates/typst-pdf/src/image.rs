@@ -158,6 +158,26 @@ impl CustomImage for PdfRasterImage {
                     // Pure luma8 or rgb8 image, can use it directly.
                     (DynamicImage::ImageLuma8(_), _) => dynamic.clone(),
                     (DynamicImage::ImageRgb8(_), _) => dynamic.clone(),
+                    // 8-bit images with alpha, strip the alpha channel
+                    // directly from the raw buffer.
+                    (DynamicImage::ImageLumaA8(image), _) => {
+                        let buf = image.as_raw().chunks_exact(2).map(|p| p[0]).collect();
+                        let (w, h) = image.dimensions();
+                        Arc::new(DynamicImage::ImageLuma8(
+                            image::GrayImage::from_raw(w, h, buf).unwrap(),
+                        ))
+                    }
+                    (DynamicImage::ImageRgba8(image), _) => {
+                        let buf = image
+                            .as_raw()
+                            .chunks_exact(4)
+                            .flat_map(|p| [p[0], p[1], p[2]])
+                            .collect();
+                        let (w, h) = image.dimensions();
+                        Arc::new(DynamicImage::ImageRgb8(
+                            image::RgbImage::from_raw(w, h, buf).unwrap(),
+                        ))
+                    }
                     // Grey-scale image, convert to luma8.
                     (_, 1 | 2) => Arc::new(DynamicImage::ImageLuma8(dynamic.to_luma8())),
                     // Anything else, convert to rgb8.
@@ -170,15 +190,18 @@ impl CustomImage for PdfRasterImage {
     fn alpha_channel(&self) -> Option<&[u8]> {
         self.0
             .alpha_channel
-            .get_or_init(|| {
-                self.0.raster.dynamic().color().has_alpha().then(|| {
-                    self.0
-                        .raster
-                        .dynamic()
-                        .pixels()
-                        .map(|(_, _, Rgba([_, _, _, a]))| a)
-                        .collect()
-                })
+            .get_or_init(|| match self.0.raster.dynamic().as_ref() {
+                // 8-bit images with alpha, extract the alpha channel directly
+                // from the raw buffer.
+                DynamicImage::ImageLumaA8(image) => {
+                    Some(image.as_raw().chunks_exact(2).map(|p| p[1]).collect())
+                }
+                DynamicImage::ImageRgba8(image) => {
+                    Some(image.as_raw().chunks_exact(4).map(|p| p[3]).collect())
+                }
+                dynamic => dynamic.color().has_alpha().then(|| {
+                    dynamic.pixels().map(|(_, _, Rgba([_, _, _, a]))| a).collect()
+                }),
             })
             .as_ref()
             .map(|v| &**v)
