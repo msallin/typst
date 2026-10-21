@@ -91,6 +91,17 @@ impl<'a> Glyphs<'a> {
         Self { inner: Cow::Owned(glyphs), kept: 0..len }
     }
 
+    /// Create a collection that borrows this one's glyphs, keeping the same
+    /// trimming.
+    ///
+    /// This is cheap as no glyphs are cloned.
+    pub fn borrowed(&self) -> Glyphs<'_> {
+        Glyphs {
+            inner: Cow::Borrowed(&self.inner),
+            kept: self.kept.clone(),
+        }
+    }
+
     /// Clone the internal glyph data to make it modifiable. Should be avoided
     /// if possible on potentially borrowed glyphs as it can be expensive
     /// (benchmarks have shown ~10% slowdown on a text-heavy document if no

@@ -432,15 +432,21 @@ fn adjust_cj_at_line_end(p: &Preparation, items: &mut Items) {
 
 /// Remove tracking from the last glyph if it has been applied.
 fn adjust_glyph_tracking_at_line_end(items: &mut Items) {
-    let Some(shaped) = items.trailing_text_mut() else { return };
-    let Some(glyph) = shaped.glyphs.last() else { return };
-
-    if glyph.tracking_applied {
-        let tracking = shaped.styles.get(TextElem::tracking);
-        let glyph = shaped.glyphs.to_mut().last_mut().unwrap();
-        glyph.x_advance -= Em::from_length(tracking, glyph.size);
-        glyph.tracking_applied = false;
+    // Check immutably first to avoid copying the item if there is nothing to
+    // do, which is the common case.
+    if !items
+        .trailing_text()
+        .and_then(|shaped| shaped.glyphs.last())
+        .is_some_and(|glyph| glyph.tracking_applied)
+    {
+        return;
     }
+
+    let shaped = items.trailing_text_mut().unwrap();
+    let tracking = shaped.styles.get(TextElem::tracking);
+    let glyph = shaped.glyphs.to_mut().last_mut().unwrap();
+    glyph.x_advance -= Em::from_length(tracking, glyph.size);
+    glyph.tracking_applied = false;
 }
 
 /// Whether a hyphen should be repeated at the start of the line in the given
@@ -900,7 +906,10 @@ impl<'a> ItemEntry<'a> {
         match self {
             Self::Ref(item) => {
                 let text = item.text()?;
-                *self = Self::Box(Box::new(Item::Text(text.clone())));
+                // Borrow the glyphs instead of cloning them. They are only
+                // copied once they are actually modified.
+                let glyphs = text.glyphs.borrowed();
+                *self = Self::Box(Box::new(Item::Text(ShapedText { glyphs, ..*text })));
                 match self {
                     Self::Box(item) => item.text_mut(),
                     Self::Ref(_) => unreachable!(),
