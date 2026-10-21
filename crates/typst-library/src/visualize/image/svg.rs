@@ -30,6 +30,7 @@ struct SvgImageInner {
     data: Bytes,
     size: Axes<f64>,
     font_hash: u128,
+    image_hash: u128,
     tree: usvg::Tree,
 }
 
@@ -44,6 +45,7 @@ impl SvgImage {
             data,
             size: tree_size(&tree),
             font_hash: 0,
+            image_hash: 0,
             tree,
         })))
     }
@@ -102,7 +104,8 @@ impl SvgImage {
         )
         .map_err(format_usvg_error)?;
 
-        if let Some(err) = image_resolver.into_inner().unwrap().error {
+        let (error, image_hash) = image_resolver.into_inner().unwrap().finish();
+        if let Some(err) = error {
             return Err(err);
         }
 
@@ -113,6 +116,7 @@ impl SvgImage {
             data,
             size: tree_size(&tree),
             font_hash,
+            image_hash,
             tree,
         }));
 
@@ -142,11 +146,13 @@ impl SvgImage {
 
 impl Hash for SvgImageInner {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        // An SVG might contain fonts, which must be incorporated into the hash.
-        // We can't hash a usvg tree directly, but the raw SVG data + a hash of
-        // all used fonts gives us something similar.
+        // An SVG might contain fonts and linked images, which must be
+        // incorporated into the hash. We can't hash a usvg tree directly, but
+        // the raw SVG data + a hash of all used fonts and linked images gives
+        // us something similar.
         self.data.hash(state);
         self.font_hash.hash(state);
+        self.image_hash.hash(state);
     }
 }
 
@@ -418,11 +424,24 @@ struct ImageResolver<'a> {
     svg_file: Option<FileId>,
     /// The first error that occurred when loading a linked image, if any.
     error: Option<LoadError>,
+    /// Accumulates a hash of all loaded linked images.
+    hasher: SipHasher13,
 }
 
 impl<'a> ImageResolver<'a> {
     fn new(world: Tracked<'a, dyn World + 'a>, svg_file: Option<FileId>) -> Self {
-        Self { world, svg_file, error: None }
+        Self {
+            world,
+            svg_file,
+            error: None,
+            hasher: SipHasher13::new(),
+        }
+    }
+
+    /// Returns the first error that occurred, if any, and a hash of all loaded
+    /// linked images.
+    fn finish(self) -> (Option<LoadError>, u128) {
+        (self.error, self.hasher.finish128().as_u128())
     }
 
     /// Load a linked image or return None if a previous image caused an error,
@@ -480,6 +499,10 @@ impl<'a> ImageResolver<'a> {
         // Load image if file can be accessed.
         match self.world.file(href_file) {
             Ok(bytes) => {
+                // The same SVG data can link to different images depending on
+                // where it is located, so the images are part of its identity.
+                href_file.hash(&mut self.hasher);
+                bytes.hash(&mut self.hasher);
                 let arc_data = Arc::new(bytes.into_vec());
                 let format = match determine_format_from_path(href_file.vpath()) {
                     Some(format) => Some(format),

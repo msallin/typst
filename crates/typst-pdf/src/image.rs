@@ -3,6 +3,7 @@ use std::sync::{Arc, OnceLock};
 
 use ecow::eco_format;
 use image::{DynamicImage, EncodableLayout, GenericImageView, Rgba};
+use krilla::graphic::Graphic;
 use krilla::image::{BitsPerComponent, CustomImage, ImageColorspace};
 use krilla::pdf::PdfDocument;
 use krilla::surface::Surface;
@@ -63,11 +64,41 @@ pub(crate) fn handle_image(
         }
         ImageKind::Svg(svg) => {
             if let Some(size) = size.to_krilla() {
-                surface.draw_svg(
-                    svg.tree(),
-                    size,
-                    SvgSettings { embed_text: true, ..Default::default() },
-                );
+                let tree = svg.tree();
+                let settings = SvgSettings { embed_text: true, ..Default::default() };
+
+                // Filters are rasterized at a resolution that depends on the
+                // current transform, so SVGs with filters are always drawn
+                // directly. All others are converted only once into a
+                // graphic that is reused for every placement.
+                if !tree.filters().is_empty() {
+                    surface.draw_svg(tree, size, settings);
+                } else {
+                    let graphic = gc
+                        .svg_graphics
+                        .entry(typst_utils::hash128(svg))
+                        .or_insert_with(|| {
+                            let natural = krilla::geom::Size::from_wh(
+                                tree.size().width(),
+                                tree.size().height(),
+                            )
+                            .unwrap();
+                            let mut builder = surface.stream_builder();
+                            let mut sub = builder.surface();
+                            sub.set_location(span.into_raw());
+                            sub.draw_svg(tree, natural, settings);
+                            sub.finish();
+                            Graphic::new(builder.finish(), false)
+                        })
+                        .clone();
+
+                    surface.push_transform(&krilla::geom::Transform::from_scale(
+                        size.width() / tree.size().width(),
+                        size.height() / tree.size().height(),
+                    ));
+                    surface.draw_graphic(graphic);
+                    surface.pop();
+                }
             }
         }
         ImageKind::Pdf(pdf) => {
@@ -127,6 +158,26 @@ impl CustomImage for PdfRasterImage {
                     // Pure luma8 or rgb8 image, can use it directly.
                     (DynamicImage::ImageLuma8(_), _) => dynamic.clone(),
                     (DynamicImage::ImageRgb8(_), _) => dynamic.clone(),
+                    // 8-bit images with alpha, strip the alpha channel
+                    // directly from the raw buffer.
+                    (DynamicImage::ImageLumaA8(image), _) => {
+                        let buf = image.as_raw().chunks_exact(2).map(|p| p[0]).collect();
+                        let (w, h) = image.dimensions();
+                        Arc::new(DynamicImage::ImageLuma8(
+                            image::GrayImage::from_raw(w, h, buf).unwrap(),
+                        ))
+                    }
+                    (DynamicImage::ImageRgba8(image), _) => {
+                        let buf = image
+                            .as_raw()
+                            .chunks_exact(4)
+                            .flat_map(|p| [p[0], p[1], p[2]])
+                            .collect();
+                        let (w, h) = image.dimensions();
+                        Arc::new(DynamicImage::ImageRgb8(
+                            image::RgbImage::from_raw(w, h, buf).unwrap(),
+                        ))
+                    }
                     // Grey-scale image, convert to luma8.
                     (_, 1 | 2) => Arc::new(DynamicImage::ImageLuma8(dynamic.to_luma8())),
                     // Anything else, convert to rgb8.
@@ -139,15 +190,18 @@ impl CustomImage for PdfRasterImage {
     fn alpha_channel(&self) -> Option<&[u8]> {
         self.0
             .alpha_channel
-            .get_or_init(|| {
-                self.0.raster.dynamic().color().has_alpha().then(|| {
-                    self.0
-                        .raster
-                        .dynamic()
-                        .pixels()
-                        .map(|(_, _, Rgba([_, _, _, a]))| a)
-                        .collect()
-                })
+            .get_or_init(|| match self.0.raster.dynamic().as_ref() {
+                // 8-bit images with alpha, extract the alpha channel directly
+                // from the raw buffer.
+                DynamicImage::ImageLumaA8(image) => {
+                    Some(image.as_raw().chunks_exact(2).map(|p| p[1]).collect())
+                }
+                DynamicImage::ImageRgba8(image) => {
+                    Some(image.as_raw().chunks_exact(4).map(|p| p[3]).collect())
+                }
+                dynamic => dynamic.color().has_alpha().then(|| {
+                    dynamic.pixels().map(|(_, _, Rgba([_, _, _, a]))| a).collect()
+                }),
             })
             .as_ref()
             .map(|v| &**v)
@@ -205,9 +259,42 @@ fn convert_raster(
             icc_profile.map(|i| i.into()),
             interpolate,
         )
+    } else if can_embed_png_directly(&raster) {
+        let image_data: Arc<dyn AsRef<[u8]> + Send + Sync> =
+            Arc::new(raster.data().clone());
+        krilla::image::Image::from_png(image_data.into(), interpolate)
     } else {
         krilla::image::Image::from_custom(PdfRasterImage::new(raster), interpolate)
     }
+}
+
+/// Whether the encoded data of a PNG can be embedded into the PDF as-is,
+/// instead of being decoded and recompressed.
+///
+/// This is the case for non-interlaced 8-bit grayscale and RGB images without
+/// transparency, an ICC profile, or an EXIF rotation (which is baked into the
+/// decoded image for non-JPEG formats).
+fn can_embed_png_directly(raster: &RasterImage) -> bool {
+    if raster.format() != RasterFormat::Exchange(ExchangeFormat::Png)
+        || raster.icc().is_some()
+        || raster.exif_rotation().is_some_and(|rotation| rotation != 1)
+        || !matches!(
+            raster.dynamic().as_ref(),
+            DynamicImage::ImageLuma8(_) | DynamicImage::ImageRgb8(_)
+        )
+    {
+        return false;
+    }
+
+    // The IHDR chunk must directly follow the 8-byte signature. It holds the
+    // bit depth at offset 24, the color type at 25, and the interlace method
+    // at 28.
+    let data = raster.data().as_slice();
+    data.len() > 28
+        && &data[12..16] == b"IHDR"
+        && data[24] == 8
+        && matches!(data[25], 0 | 2)
+        && data[28] == 0
 }
 
 #[comemo::memoize]

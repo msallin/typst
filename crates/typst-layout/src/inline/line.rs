@@ -34,6 +34,13 @@ pub struct Line<'a> {
     pub items: Items<'a>,
     /// The exact natural width of the line.
     pub width: Abs,
+    /// How much the line can stretch.
+    pub stretchability: Abs,
+    /// How much the line can shrink.
+    pub shrinkability: Abs,
+    /// How many glyphs are in the text where we can insert additional space
+    /// when encountering underfull lines.
+    pub justifiables: usize,
     /// Whether the line should be justified.
     pub justify: bool,
     /// Whether the line ends with a hyphen or dash, either naturally or through
@@ -47,48 +54,12 @@ impl Line<'_> {
         Self {
             items: Items::new(),
             width: Abs::zero(),
+            stretchability: Abs::zero(),
+            shrinkability: Abs::zero(),
+            justifiables: 0,
             justify: false,
             dash: None,
         }
-    }
-
-    /// How many glyphs are in the text where we can insert additional
-    /// space when encountering underfull lines.
-    pub fn justifiables(&self) -> usize {
-        let mut count = 0;
-        for shaped in self.items.iter().filter_map(Item::text) {
-            count += shaped.justifiables();
-        }
-
-        // CJK character at line end should not be adjusted.
-        if self
-            .items
-            .trailing_text()
-            .map(|s| s.cjk_justifiable_at_last())
-            .unwrap_or(false)
-        {
-            count -= 1;
-        }
-
-        count
-    }
-
-    /// How much the line can stretch.
-    pub fn stretchability(&self) -> Abs {
-        self.items
-            .iter()
-            .filter_map(Item::text)
-            .map(|s| s.stretchability())
-            .sum()
-    }
-
-    /// How much the line can shrink.
-    pub fn shrinkability(&self) -> Abs {
-        self.items
-            .iter()
-            .filter_map(Item::text)
-            .map(|s| s.shrinkability())
-            .sum()
     }
 
     /// Whether the line has items with negative width.
@@ -164,8 +135,7 @@ pub fn line<'a>(
         && let Some(pred_text) = pred.items.trailing_text()
         && should_repeat_hyphen(pred_text.lang, full)
         && let Some((base_idx, base)) = items.leading_text_indexed()
-        && let Some(hyphen) =
-            ShapedText::hyphen(engine, p.config.fallback, base, trim.shaping, false)
+        && let Some(hyphen) = hyphen(engine, p, base_idx, base, trim.shaping, false)
     {
         items.prepend(Item::Text(hyphen), base_idx.before());
     }
@@ -173,8 +143,7 @@ pub fn line<'a>(
     // Add a hyphen at the line end, if we ended on a soft hyphen.
     if dash == Some(Dash::Soft)
         && let Some((base_idx, base)) = items.trailing_text_indexed()
-        && let Some(hyphen) =
-            ShapedText::hyphen(engine, p.config.fallback, base, trim.shaping, true)
+        && let Some(hyphen) = hyphen(engine, p, base_idx, base, trim.shaping, true)
     {
         items.push(Item::Text(hyphen), base_idx.after());
     }
@@ -192,10 +161,58 @@ pub fn line<'a>(
     // Deal with stretchability of glyphs at the end of the line.
     adjust_glyph_stretch_at_line_end(p, &mut items);
 
-    // Compute the line's width.
-    let width = items.iter().map(Item::natural_width).sum();
+    // Compute the line's metrics in a single pass over the items. These are
+    // queried repeatedly during line breaking.
+    let mut width = Abs::zero();
+    let mut stretchability = Abs::zero();
+    let mut shrinkability = Abs::zero();
+    let mut justifiables = 0;
+    for item in items.iter() {
+        if let Item::Text(shaped) = item {
+            let (w, stretch, shrink, count) = shaped.metrics();
+            width += w;
+            stretchability += stretch;
+            shrinkability += shrink;
+            justifiables += count;
+        } else {
+            width += item.natural_width();
+        }
+    }
 
-    Line { items, width, justify, dash }
+    // CJK character at line end should not be adjusted.
+    if items.trailing_text().is_some_and(|s| s.cjk_justifiable_at_last()) {
+        justifiables -= 1;
+    }
+
+    Line {
+        items,
+        width,
+        stretchability,
+        shrinkability,
+        justifiables,
+        justify,
+        dash,
+    }
+}
+
+/// Creates shaped text containing a hyphen for the text run `base` at the
+/// logical index `idx`, reusing the paragraph's cached hyphen glyph if
+/// possible.
+fn hyphen<'a>(
+    engine: &Engine,
+    p: &Preparation,
+    idx: LogicalIndex,
+    base: &ShapedText<'a>,
+    pos: usize,
+    soft: bool,
+) -> Option<ShapedText<'a>> {
+    let glyph = p
+        .hyphens
+        .borrow_mut()
+        .entry(idx)
+        .or_insert_with(|| ShapedText::hyphen_glyph(engine, p.config.fallback, base))
+        .clone()?;
+    Some(ShapedText::hyphen_with_glyph(base, &glyph, pos, soft))
 }
 
 /// Collects / reshapes all items for the line with the given `range`.
@@ -551,8 +568,8 @@ pub fn commit(
     let mut justification_ratio = 0.0;
     let mut extra_justification = Abs::zero();
 
-    let shrinkability = line.shrinkability();
-    let stretchability = line.stretchability();
+    let shrinkability = line.shrinkability;
+    let stretchability = line.stretchability;
     if remaining < Abs::zero() && shrinkability > Abs::zero() {
         // Attempt to reduce the length of the line, using shrinkability.
         justification_ratio = (remaining / shrinkability).max(-1.0);
@@ -564,7 +581,7 @@ pub fn commit(
             remaining = (remaining - stretchability).max(Abs::zero());
         }
 
-        let justifiables = line.justifiables();
+        let justifiables = line.justifiables;
         if justifiables > 0 && remaining > Abs::zero() {
             // Underfull line, distribute the extra space.
             extra_justification = remaining / justifiables as f64;
@@ -842,7 +859,7 @@ impl Debug for Items<'_> {
 ///
 /// Logical indices must be unique within a line because we use an unstable
 /// sort.
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct LogicalIndex(usize);
 
 impl LogicalIndex {

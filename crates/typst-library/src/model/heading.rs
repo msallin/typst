@@ -1,4 +1,5 @@
 use std::num::NonZeroUsize;
+use std::sync::LazyLock;
 
 use ecow::EcoString;
 use typst_syntax::{LooselySpanned, Spanned};
@@ -294,25 +295,34 @@ impl Synthesize for Packed<HeadingElem> {
 
 impl ShowSet for Packed<HeadingElem> {
     fn show_set(&self, styles: StyleChain) -> Styles {
+        // The styles only differ for the first two levels. Building them once
+        // also preserves their cached hashes.
+        static STYLES: LazyLock<[Styles; 3]> =
+            LazyLock::new(|| [1, 2, 3].map(heading_show_set));
         let level = self.resolve_level(styles).get();
-        let scale = match level {
-            1 => 1.4,
-            2 => 1.2,
-            _ => 1.0,
-        };
-
-        let size = Em::new(scale);
-        let above = Em::new(if level == 1 { 1.8 } else { 1.44 }) / scale;
-        let below = Em::new(0.75) / scale;
-
-        let mut out = Styles::new();
-        out.set(TextElem::size, TextSize(size.into()));
-        out.set(TextElem::weight, FontWeight::BOLD);
-        out.set(BlockElem::above, Smart::Custom(above.into()));
-        out.set(BlockElem::below, Smart::Custom(below.into()));
-        out.set(BlockElem::sticky, true);
-        out
+        STYLES[level.min(3) - 1].clone()
     }
+}
+
+/// The built-in show-set styles for a heading of the given level.
+fn heading_show_set(level: usize) -> Styles {
+    let scale = match level {
+        1 => 1.4,
+        2 => 1.2,
+        _ => 1.0,
+    };
+
+    let size = Em::new(scale);
+    let above = Em::new(if level == 1 { 1.8 } else { 1.44 }) / scale;
+    let below = Em::new(0.75) / scale;
+
+    let mut out = Styles::new();
+    out.set(TextElem::size, TextSize(size.into()));
+    out.set(TextElem::weight, FontWeight::BOLD);
+    out.set(BlockElem::above, Smart::Custom(above.into()));
+    out.set(BlockElem::below, Smart::Custom(below.into()));
+    out.set(BlockElem::sticky, true);
+    out
 }
 
 impl Count for Packed<HeadingElem> {

@@ -1,9 +1,14 @@
+use std::cell::RefCell;
+
 use either::Either;
+use rustc_hash::FxHashMap;
 use typst_library::layout::{Dir, Em};
 use typst_library::text::TextElem;
 use unicode_bidi::{BidiInfo, Level as BidiLevel};
 
 use super::*;
+use crate::inline::line::LogicalIndex;
+use crate::inline::shaping::HyphenGlyph;
 
 /// A representation in which children are already layouted and text is already
 /// preshaped.
@@ -27,6 +32,10 @@ pub struct Preparation<'a> {
     pub indices: Vec<usize>,
     /// The span mapper.
     pub spans: SpanMapper,
+    /// Caches the hyphen glyph for text items, as selecting it involves font
+    /// selection and fallback. All text runs with the same logical index stem
+    /// from the same prepared item and thus share styles and font variant.
+    pub hyphens: RefCell<FxHashMap<LogicalIndex, Option<HyphenGlyph>>>,
 }
 
 impl<'a> Preparation<'a> {
@@ -117,6 +126,7 @@ pub fn prepare<'a>(
         items,
         indices,
         spans,
+        hyphens: RefCell::default(),
     })
 }
 

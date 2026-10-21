@@ -1,5 +1,6 @@
 use std::ops::Deref;
 use std::str::FromStr;
+use std::sync::LazyLock;
 
 use comemo::Tracked;
 use ecow::{EcoString, eco_format};
@@ -243,9 +244,13 @@ impl LinkElem {
 
 impl ShowSet for Packed<LinkElem> {
     fn show_set(&self, _: StyleChain) -> Styles {
-        let mut out = Styles::new();
-        out.set(TextElem::hyphenate, Smart::Custom(false));
-        out
+        // Building the styles once also preserves their cached hashes.
+        static STYLES: LazyLock<Styles> = LazyLock::new(|| {
+            let mut out = Styles::new();
+            out.set(TextElem::hyphenate, Smart::Custom(false));
+            out
+        });
+        STYLES.clone()
     }
 }
 

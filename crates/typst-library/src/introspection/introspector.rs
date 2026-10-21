@@ -11,7 +11,7 @@ use smallvec::SmallVec;
 use typst_syntax::VirtualPath;
 
 use crate::diag::{StrResult, bail};
-use crate::foundations::{Content, Label, Repr, Selector};
+use crate::foundations::{Content, Element, Label, Repr, Selector};
 use crate::introspection::{DocumentPosition, Location, Tag};
 use crate::model::Numbering;
 
@@ -182,6 +182,9 @@ pub struct ElementIntrospector<P> {
     locations: FxHashMap<Location, Range<usize>>,
     /// Accelerates lookup of elements by label.
     labels: MultiMap<Label, usize>,
+    /// Accelerates lookup of elements by element type. The indices are in
+    /// document order.
+    kinds: MultiMap<Element, usize>,
     /// Caches queries done on the introspector. This is important because
     /// even if all top-level queries are distinct, they often have shared
     /// subqueries. Example: Individual counter queries with `before` that
@@ -198,8 +201,11 @@ impl<P> ElementIntrospector<P> {
         }
 
         let output = match selector {
-            Selector::Elem(..) => self
-                .all()
+            Selector::Elem(element, _) => self
+                .kinds
+                .get(element)
+                .iter()
+                .map(|&idx| self.get_by_idx(idx))
                 .filter(|elem| selector.matches(elem, None))
                 .cloned()
                 .collect(),
@@ -485,6 +491,7 @@ pub struct ElementIntrospectorBuilder<P> {
     keys: MultiMap<u128, Location>,
     locations: FxHashMap<Location, Range<usize>>,
     labels: MultiMap<Label, usize>,
+    kinds: MultiMap<Element, usize>,
 }
 
 /// An item in the builder's sink.
@@ -506,6 +513,7 @@ impl<P> ElementIntrospectorBuilder<P> {
             keys: MultiMap::default(),
             locations: FxHashMap::default(),
             labels: MultiMap::default(),
+            kinds: MultiMap::default(),
         }
     }
 
@@ -589,6 +597,7 @@ impl<P> ElementIntrospectorBuilder<P> {
             keys: self.keys,
             locations: self.locations,
             labels: self.labels,
+            kinds: self.kinds,
             queries: QueryCache::default(),
         }
     }
@@ -610,6 +619,9 @@ impl<P> ElementIntrospectorBuilder<P> {
                 if let Some(label) = elem.label() {
                     self.labels.insert(label, idx);
                 }
+
+                // Populate the element type acceleration map.
+                self.kinds.insert(elem.elem(), idx);
 
                 // Save the element.
                 elems.push((elem, pos));

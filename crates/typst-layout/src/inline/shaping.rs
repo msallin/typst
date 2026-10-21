@@ -318,6 +318,16 @@ impl ShapedGlyph {
     }
 }
 
+/// The font and glyph used for a hyphen, as selected by
+/// [`ShapedText::hyphen_glyph`].
+#[derive(Clone)]
+pub struct HyphenGlyph {
+    font: FontInstance,
+    glyph_id: u16,
+    x_advance: Em,
+    size: Abs,
+}
+
 impl<'a> ShapedText<'a> {
     /// Build the shaped text's frame.
     ///
@@ -509,10 +519,22 @@ impl<'a> ShapedText<'a> {
         (top, bottom)
     }
 
-    /// How many glyphs are in the text where we can insert additional
-    /// space when encountering underfull lines.
-    pub fn justifiables(&self) -> usize {
-        self.glyphs.iter().filter(|g| g.is_justifiable()).count()
+    /// Computes the width, stretchability, shrinkability, and number of
+    /// justifiable glyphs (where we can insert additional space when
+    /// encountering underfull lines) in a single pass over the glyphs.
+    pub fn metrics(&self) -> (Abs, Abs, Abs, usize) {
+        let mut width = Abs::zero();
+        let mut stretchability = Abs::zero();
+        let mut shrinkability = Abs::zero();
+        let mut justifiables = 0;
+        for g in self.glyphs.iter() {
+            let (stretch, shrink) = (g.stretchability(), g.shrinkability());
+            width += g.x_advance.at(g.size);
+            stretchability += (stretch.0 + stretch.1).at(g.size);
+            shrinkability += (shrink.0 + shrink.1).at(g.size);
+            justifiables += g.is_justifiable() as usize;
+        }
+        (width, stretchability, shrinkability, justifiables)
     }
 
     /// Whether the last glyph is a CJK character which should not be justified
@@ -522,22 +544,6 @@ impl<'a> ShapedText<'a> {
             .last()
             .map(|g| g.is_cj_script() || g.is_cjk_punctuation())
             .unwrap_or(false)
-    }
-
-    /// The stretchability of the text.
-    pub fn stretchability(&self) -> Abs {
-        self.glyphs
-            .iter()
-            .map(|g| (g.stretchability().0 + g.stretchability().1).at(g.size))
-            .sum()
-    }
-
-    /// The shrinkability of the text
-    pub fn shrinkability(&self) -> Abs {
-        self.glyphs
-            .iter()
-            .map(|g| (g.shrinkability().0 + g.shrinkability().1).at(g.size))
-            .sum()
     }
 
     /// Reshape a range of the shaped text, reusing information from this
@@ -577,17 +583,14 @@ impl<'a> ShapedText<'a> {
         Self { text: "", glyphs: Glyphs::from_slice(&[]), ..*self }
     }
 
-    /// Creates shaped text containing a hyphen.
+    /// Selects the font and glyph for a hyphen in the given text run.
     ///
-    /// If `soft` is true, the item will map to plain text as a soft hyphen.
-    /// Otherwise, it will map to a normal hyphen.
-    pub fn hyphen(
+    /// This only depends on the styles and the font variant of `base`.
+    pub fn hyphen_glyph(
         engine: &Engine,
         fallback: bool,
         base: &ShapedText<'a>,
-        pos: usize,
-        soft: bool,
-    ) -> Option<Self> {
+    ) -> Option<HyphenGlyph> {
         let world = engine.world;
         let book = world.book();
         let fallback_func = if fallback {
@@ -610,33 +613,45 @@ impl<'a> ShapedText<'a> {
             let ttf = font.ttf();
             let glyph_id = ttf.glyph_index('-')?;
             let x_advance = font.to_em(ttf.glyph_hor_advance(glyph_id)?);
-            let (c, text) = if soft { (SHY, SHY_STR) } else { (HYPHEN, HYPHEN_STR) };
-
-            Some(ShapedText {
-                base: pos,
-                text,
-                dir: base.dir,
-                lang: base.lang,
-                region: base.region,
-                styles: base.styles,
-                variant: base.variant,
-                glyphs: Glyphs::from_vec(vec![ShapedGlyph {
-                    font,
-                    glyph_id: glyph_id.0,
-                    tracking_applied: false,
-                    x_advance,
-                    x_offset: Em::zero(),
-                    y_offset: Em::zero(),
-                    size,
-                    adjustability: Adjustability::default(),
-                    range: pos..pos + text.len(),
-                    safe_to_break: true,
-                    c,
-                    is_justifiable: false,
-                    script: Script::Common,
-                }]),
-            })
+            Some(HyphenGlyph { font, glyph_id: glyph_id.0, x_advance, size })
         })
+    }
+
+    /// Creates shaped text containing a hyphen with the given glyph.
+    ///
+    /// If `soft` is true, the item will map to plain text as a soft hyphen.
+    /// Otherwise, it will map to a normal hyphen.
+    pub fn hyphen_with_glyph(
+        base: &ShapedText<'a>,
+        glyph: &HyphenGlyph,
+        pos: usize,
+        soft: bool,
+    ) -> Self {
+        let (c, text) = if soft { (SHY, SHY_STR) } else { (HYPHEN, HYPHEN_STR) };
+        ShapedText {
+            base: pos,
+            text,
+            dir: base.dir,
+            lang: base.lang,
+            region: base.region,
+            styles: base.styles,
+            variant: base.variant,
+            glyphs: Glyphs::from_vec(vec![ShapedGlyph {
+                font: glyph.font.clone(),
+                glyph_id: glyph.glyph_id,
+                tracking_applied: false,
+                x_advance: glyph.x_advance,
+                x_offset: Em::zero(),
+                y_offset: Em::zero(),
+                size: glyph.size,
+                adjustability: Adjustability::default(),
+                range: pos..pos + text.len(),
+                safe_to_break: true,
+                c,
+                is_justifiable: false,
+                script: Script::Common,
+            }]),
+        }
     }
 
     /// Find the subslice of glyphs that represent the given text range if both
