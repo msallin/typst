@@ -318,6 +318,16 @@ impl ShapedGlyph {
     }
 }
 
+/// The font and glyph used for a hyphen, as selected by
+/// [`ShapedText::hyphen_glyph`].
+#[derive(Clone)]
+pub struct HyphenGlyph {
+    font: FontInstance,
+    glyph_id: u16,
+    x_advance: Em,
+    size: Abs,
+}
+
 impl<'a> ShapedText<'a> {
     /// Build the shaped text's frame.
     ///
@@ -573,17 +583,14 @@ impl<'a> ShapedText<'a> {
         Self { text: "", glyphs: Glyphs::from_slice(&[]), ..*self }
     }
 
-    /// Creates shaped text containing a hyphen.
+    /// Selects the font and glyph for a hyphen in the given text run.
     ///
-    /// If `soft` is true, the item will map to plain text as a soft hyphen.
-    /// Otherwise, it will map to a normal hyphen.
-    pub fn hyphen(
+    /// This only depends on the styles and the font variant of `base`.
+    pub fn hyphen_glyph(
         engine: &Engine,
         fallback: bool,
         base: &ShapedText<'a>,
-        pos: usize,
-        soft: bool,
-    ) -> Option<Self> {
+    ) -> Option<HyphenGlyph> {
         let world = engine.world;
         let book = world.book();
         let fallback_func = if fallback {
@@ -606,33 +613,45 @@ impl<'a> ShapedText<'a> {
             let ttf = font.ttf();
             let glyph_id = ttf.glyph_index('-')?;
             let x_advance = font.to_em(ttf.glyph_hor_advance(glyph_id)?);
-            let (c, text) = if soft { (SHY, SHY_STR) } else { (HYPHEN, HYPHEN_STR) };
-
-            Some(ShapedText {
-                base: pos,
-                text,
-                dir: base.dir,
-                lang: base.lang,
-                region: base.region,
-                styles: base.styles,
-                variant: base.variant,
-                glyphs: Glyphs::from_vec(vec![ShapedGlyph {
-                    font,
-                    glyph_id: glyph_id.0,
-                    tracking_applied: false,
-                    x_advance,
-                    x_offset: Em::zero(),
-                    y_offset: Em::zero(),
-                    size,
-                    adjustability: Adjustability::default(),
-                    range: pos..pos + text.len(),
-                    safe_to_break: true,
-                    c,
-                    is_justifiable: false,
-                    script: Script::Common,
-                }]),
-            })
+            Some(HyphenGlyph { font, glyph_id: glyph_id.0, x_advance, size })
         })
+    }
+
+    /// Creates shaped text containing a hyphen with the given glyph.
+    ///
+    /// If `soft` is true, the item will map to plain text as a soft hyphen.
+    /// Otherwise, it will map to a normal hyphen.
+    pub fn hyphen_with_glyph(
+        base: &ShapedText<'a>,
+        glyph: &HyphenGlyph,
+        pos: usize,
+        soft: bool,
+    ) -> Self {
+        let (c, text) = if soft { (SHY, SHY_STR) } else { (HYPHEN, HYPHEN_STR) };
+        ShapedText {
+            base: pos,
+            text,
+            dir: base.dir,
+            lang: base.lang,
+            region: base.region,
+            styles: base.styles,
+            variant: base.variant,
+            glyphs: Glyphs::from_vec(vec![ShapedGlyph {
+                font: glyph.font.clone(),
+                glyph_id: glyph.glyph_id,
+                tracking_applied: false,
+                x_advance: glyph.x_advance,
+                x_offset: Em::zero(),
+                y_offset: Em::zero(),
+                size: glyph.size,
+                adjustability: Adjustability::default(),
+                range: pos..pos + text.len(),
+                safe_to_break: true,
+                c,
+                is_justifiable: false,
+                script: Script::Common,
+            }]),
+        }
     }
 
     /// Find the subslice of glyphs that represent the given text range if both

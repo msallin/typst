@@ -135,8 +135,7 @@ pub fn line<'a>(
         && let Some(pred_text) = pred.items.trailing_text()
         && should_repeat_hyphen(pred_text.lang, full)
         && let Some((base_idx, base)) = items.leading_text_indexed()
-        && let Some(hyphen) =
-            ShapedText::hyphen(engine, p.config.fallback, base, trim.shaping, false)
+        && let Some(hyphen) = hyphen(engine, p, base_idx, base, trim.shaping, false)
     {
         items.prepend(Item::Text(hyphen), base_idx.before());
     }
@@ -144,8 +143,7 @@ pub fn line<'a>(
     // Add a hyphen at the line end, if we ended on a soft hyphen.
     if dash == Some(Dash::Soft)
         && let Some((base_idx, base)) = items.trailing_text_indexed()
-        && let Some(hyphen) =
-            ShapedText::hyphen(engine, p.config.fallback, base, trim.shaping, true)
+        && let Some(hyphen) = hyphen(engine, p, base_idx, base, trim.shaping, true)
     {
         items.push(Item::Text(hyphen), base_idx.after());
     }
@@ -195,6 +193,26 @@ pub fn line<'a>(
         justify,
         dash,
     }
+}
+
+/// Creates shaped text containing a hyphen for the text run `base` at the
+/// logical index `idx`, reusing the paragraph's cached hyphen glyph if
+/// possible.
+fn hyphen<'a>(
+    engine: &Engine,
+    p: &Preparation,
+    idx: LogicalIndex,
+    base: &ShapedText<'a>,
+    pos: usize,
+    soft: bool,
+) -> Option<ShapedText<'a>> {
+    let glyph = p
+        .hyphens
+        .borrow_mut()
+        .entry(idx)
+        .or_insert_with(|| ShapedText::hyphen_glyph(engine, p.config.fallback, base))
+        .clone()?;
+    Some(ShapedText::hyphen_with_glyph(base, &glyph, pos, soft))
 }
 
 /// Collects / reshapes all items for the line with the given `range`.
@@ -841,7 +859,7 @@ impl Debug for Items<'_> {
 ///
 /// Logical indices must be unique within a line because we use an unstable
 /// sort.
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct LogicalIndex(usize);
 
 impl LogicalIndex {
