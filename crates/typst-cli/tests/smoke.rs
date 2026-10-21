@@ -67,6 +67,24 @@ fn test_compile_pages_warning_untagged() {
 }
 
 #[test]
+fn test_compile_pdf_outline_with_pages() {
+    let project = tempfs();
+    let doc = project
+        .write("doc.typ", "= Alpha\n#pagebreak()\n= Bravo\n#pagebreak()\n= Charlie\n");
+    exec()
+        .arg("compile")
+        .arg("--pdf-tagged=false")
+        .arg("--pages=2")
+        .arg(&doc)
+        .must_succeed();
+    project
+        .read("doc.pdf")
+        .must_contain("/Title(Bravo)")
+        .must_not_contain("/Title(Alpha)")
+        .must_not_contain("/Title(Charlie)");
+}
+
+#[test]
 fn test_compile_pdf_untagged_and_accessible_standard() {
     let project = tempfs();
     let hello = project.write("hello.typ", "");
