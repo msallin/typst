@@ -205,9 +205,42 @@ fn convert_raster(
             icc_profile.map(|i| i.into()),
             interpolate,
         )
+    } else if can_embed_png_directly(&raster) {
+        let image_data: Arc<dyn AsRef<[u8]> + Send + Sync> =
+            Arc::new(raster.data().clone());
+        krilla::image::Image::from_png(image_data.into(), interpolate)
     } else {
         krilla::image::Image::from_custom(PdfRasterImage::new(raster), interpolate)
     }
+}
+
+/// Whether the encoded data of a PNG can be embedded into the PDF as-is,
+/// instead of being decoded and recompressed.
+///
+/// This is the case for non-interlaced 8-bit grayscale and RGB images without
+/// transparency, an ICC profile, or an EXIF rotation (which is baked into the
+/// decoded image for non-JPEG formats).
+fn can_embed_png_directly(raster: &RasterImage) -> bool {
+    if raster.format() != RasterFormat::Exchange(ExchangeFormat::Png)
+        || raster.icc().is_some()
+        || raster.exif_rotation().is_some_and(|rotation| rotation != 1)
+        || !matches!(
+            raster.dynamic().as_ref(),
+            DynamicImage::ImageLuma8(_) | DynamicImage::ImageRgb8(_)
+        )
+    {
+        return false;
+    }
+
+    // The IHDR chunk must directly follow the 8-byte signature. It holds the
+    // bit depth at offset 24, the color type at 25, and the interlace method
+    // at 28.
+    let data = raster.data().as_slice();
+    data.len() > 28
+        && &data[12..16] == b"IHDR"
+        && data[24] == 8
+        && matches!(data[25], 0 | 2)
+        && data[28] == 0
 }
 
 #[comemo::memoize]
