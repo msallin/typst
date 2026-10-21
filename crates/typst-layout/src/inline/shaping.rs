@@ -509,10 +509,22 @@ impl<'a> ShapedText<'a> {
         (top, bottom)
     }
 
-    /// How many glyphs are in the text where we can insert additional
-    /// space when encountering underfull lines.
-    pub fn justifiables(&self) -> usize {
-        self.glyphs.iter().filter(|g| g.is_justifiable()).count()
+    /// Computes the width, stretchability, shrinkability, and number of
+    /// justifiable glyphs (where we can insert additional space when
+    /// encountering underfull lines) in a single pass over the glyphs.
+    pub fn metrics(&self) -> (Abs, Abs, Abs, usize) {
+        let mut width = Abs::zero();
+        let mut stretchability = Abs::zero();
+        let mut shrinkability = Abs::zero();
+        let mut justifiables = 0;
+        for g in self.glyphs.iter() {
+            let (stretch, shrink) = (g.stretchability(), g.shrinkability());
+            width += g.x_advance.at(g.size);
+            stretchability += (stretch.0 + stretch.1).at(g.size);
+            shrinkability += (shrink.0 + shrink.1).at(g.size);
+            justifiables += g.is_justifiable() as usize;
+        }
+        (width, stretchability, shrinkability, justifiables)
     }
 
     /// Whether the last glyph is a CJK character which should not be justified
@@ -522,22 +534,6 @@ impl<'a> ShapedText<'a> {
             .last()
             .map(|g| g.is_cj_script() || g.is_cjk_punctuation())
             .unwrap_or(false)
-    }
-
-    /// The stretchability of the text.
-    pub fn stretchability(&self) -> Abs {
-        self.glyphs
-            .iter()
-            .map(|g| (g.stretchability().0 + g.stretchability().1).at(g.size))
-            .sum()
-    }
-
-    /// The shrinkability of the text
-    pub fn shrinkability(&self) -> Abs {
-        self.glyphs
-            .iter()
-            .map(|g| (g.shrinkability().0 + g.shrinkability().1).at(g.size))
-            .sum()
     }
 
     /// Reshape a range of the shaped text, reusing information from this

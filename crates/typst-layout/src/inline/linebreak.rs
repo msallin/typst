@@ -558,9 +558,9 @@ fn ratio_and_cost(
         p,
         available_width,
         attempt.width,
-        attempt.stretchability(),
-        attempt.shrinkability(),
-        attempt.justifiables(),
+        attempt.stretchability,
+        attempt.shrinkability,
+        attempt.justifiables,
     );
 
     let cost = raw_cost(
