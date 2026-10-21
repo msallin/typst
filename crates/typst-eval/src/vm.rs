@@ -58,8 +58,10 @@ impl<'a> Vm<'a> {
     /// This will insert the value into the top-most scope and make it available
     /// for dynamic tracing, assisting IDE functionality.
     pub fn bind(&mut self, var: ast::Ident, binding: Binding) {
-        if let Ok(value) = binding.read(self.engine.world.silent_binding_guard()) {
-            self.trace_at(var.span(), value);
+        if self.inspected == Some(var.span())
+            && let Ok(value) = binding.read(self.engine.world.silent_binding_guard())
+        {
+            self.trace(value.clone());
         }
 
         // This will become an error in the parser if `is` becomes a keyword.

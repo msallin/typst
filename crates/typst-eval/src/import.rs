@@ -108,10 +108,11 @@ impl Eval for ast::ModuleImport<'_> {
                 }
             }
             Some(ast::Imports::Wildcard) => {
+                // Filter out values that are in feature gated bindings and
+                // ignore any deprecation warnings that are emitted.
+                let guard = vm.engine.world.silent_binding_guard();
                 for (var, binding) in scope.iter() {
-                    // Filter out values that are in feature gated bindings and
-                    // ignore any deprecation warnings that are emitted.
-                    if binding.read(vm.engine.world.silent_binding_guard()).is_ok() {
+                    if binding.read(&guard).is_ok() {
                         vm.scopes.top.bind(var.clone(), binding.clone());
                     }
                 }

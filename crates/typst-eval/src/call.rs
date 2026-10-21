@@ -686,7 +686,7 @@ pub fn eval_closure(
         vm.define(name, func.clone());
     }
 
-    let num_pos_args = args.to_pos().len();
+    let num_pos_args = args.remaining();
     let sink_size = num_pos_args.checked_sub(closure.num_pos_params);
 
     let mut sink = None;
@@ -907,7 +907,12 @@ impl<'a> CapturesVisitor<'a> {
         ident: &EcoString,
         getter: impl FnOnce(&'a Scopes<'a>, &str) -> HintedStrResult<&'a Binding>,
     ) {
-        if self.internal.get_binding(ident).is_ok() {
+        // Look up the internal scopes directly instead of via `get_binding`,
+        // which would build an error for each miss. They never have a base.
+        if std::iter::once(&self.internal.top)
+            .chain(&self.internal.scopes)
+            .any(|scope| scope.get(ident).is_some())
+        {
             return;
         }
 
