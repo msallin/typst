@@ -3,6 +3,7 @@ use std::sync::{Arc, OnceLock};
 
 use ecow::eco_format;
 use image::{DynamicImage, EncodableLayout, GenericImageView, Rgba};
+use krilla::graphic::Graphic;
 use krilla::image::{BitsPerComponent, CustomImage, ImageColorspace};
 use krilla::pdf::PdfDocument;
 use krilla::surface::Surface;
@@ -63,11 +64,41 @@ pub(crate) fn handle_image(
         }
         ImageKind::Svg(svg) => {
             if let Some(size) = size.to_krilla() {
-                surface.draw_svg(
-                    svg.tree(),
-                    size,
-                    SvgSettings { embed_text: true, ..Default::default() },
-                );
+                let tree = svg.tree();
+                let settings = SvgSettings { embed_text: true, ..Default::default() };
+
+                // Filters are rasterized at a resolution that depends on the
+                // current transform, so SVGs with filters are always drawn
+                // directly. All others are converted only once into a
+                // graphic that is reused for every placement.
+                if !tree.filters().is_empty() {
+                    surface.draw_svg(tree, size, settings);
+                } else {
+                    let graphic = gc
+                        .svg_graphics
+                        .entry(typst_utils::hash128(svg))
+                        .or_insert_with(|| {
+                            let natural = krilla::geom::Size::from_wh(
+                                tree.size().width(),
+                                tree.size().height(),
+                            )
+                            .unwrap();
+                            let mut builder = surface.stream_builder();
+                            let mut sub = builder.surface();
+                            sub.set_location(span.into_raw());
+                            sub.draw_svg(tree, natural, settings);
+                            sub.finish();
+                            Graphic::new(builder.finish(), false)
+                        })
+                        .clone();
+
+                    surface.push_transform(&krilla::geom::Transform::from_scale(
+                        size.width() / tree.size().width(),
+                        size.height() / tree.size().height(),
+                    ));
+                    surface.draw_graphic(graphic);
+                    surface.pop();
+                }
             }
         }
         ImageKind::Pdf(pdf) => {
